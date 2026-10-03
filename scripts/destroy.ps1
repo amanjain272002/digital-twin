@@ -1,5 +1,7 @@
 param(
-    [string]$Environment = "dev",
+    [Parameter(Mandatory=$true)]
+    [string]$Environment,
+
     [string]$ProjectName = "twin"
 )
 
@@ -33,14 +35,12 @@ Write-Host ""
 # VALIDATE ENVIRONMENT
 # ============================================================
 
-$ValidEnvironments = @(
-    "dev",
-    "test",
-    "prod"
-)
+if ($Environment -notmatch '^(dev|test|prod)$') {
 
-if ($ValidEnvironments -notcontains $Environment) {
-    throw "Invalid environment '$Environment'. Use dev, test, or prod."
+    Write-Host "Error: Invalid environment '$Environment'" -ForegroundColor Red
+    Write-Host "Available environments: dev, test, prod" -ForegroundColor Yellow
+
+    exit 1
 }
 
 # ============================================================
@@ -57,6 +57,7 @@ if ($Environment -eq "prod") {
     Write-Host "WARNING: You are about to DESTROY the" -ForegroundColor Red
     Write-Host "Terraform infrastructure for:" -ForegroundColor Red
     Write-Host ""
+
     Write-Host "    Project     : $ProjectName" -ForegroundColor Yellow
     Write-Host "    Environment : $Environment" -ForegroundColor Yellow
     Write-Host ""
@@ -64,8 +65,10 @@ if ($Environment -eq "prod") {
     $Confirmation = Read-Host "Type DESTROY to continue"
 
     if ($Confirmation -cne "DESTROY") {
+
         Write-Host ""
         Write-Host "Destroy cancelled." -ForegroundColor Yellow
+
         exit 0
     }
 }
@@ -104,7 +107,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # ============================================================
-# VALIDATE AWS IDENTITY
+# VALIDATE AWS CREDENTIALS
 # ============================================================
 
 Write-Host ""
@@ -130,6 +133,19 @@ Write-Host "AWS Account : $AwsAccountId" -ForegroundColor Cyan
 Write-Host "AWS Identity: $AwsArn" -ForegroundColor Cyan
 
 # ============================================================
+# AWS REGION
+# ============================================================
+
+$AwsRegion = if ($env:DEFAULT_AWS_REGION) {
+    $env:DEFAULT_AWS_REGION
+}
+else {
+    "us-east-1"
+}
+
+Write-Host "AWS Region  : $AwsRegion" -ForegroundColor Cyan
+
+# ============================================================
 # TERRAFORM DIRECTORY
 # ============================================================
 
@@ -138,6 +154,29 @@ if (-not (Test-Path $TerraformPath)) {
 }
 
 Set-Location $TerraformPath
+
+Write-Host ""
+Write-Host "Terraform directory:" -ForegroundColor Yellow
+Write-Host (Get-Location).Path -ForegroundColor Cyan
+
+# ============================================================
+# TERRAFORM BACKEND CONFIGURATION
+# ============================================================
+
+$TerraformStateBucket = "twin-terraform-state-$AwsAccountId"
+$TerraformLockTable = "twin-terraform-locks"
+$TerraformStateKey = "$Environment/terraform.tfstate"
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Yellow
+Write-Host "  TERRAFORM BACKEND CONFIGURATION" -ForegroundColor Yellow
+Write-Host "========================================" -ForegroundColor Yellow
+Write-Host ""
+
+Write-Host "State Bucket : $TerraformStateBucket" -ForegroundColor Cyan
+Write-Host "State Key    : $TerraformStateKey" -ForegroundColor Cyan
+Write-Host "Lock Table   : $TerraformLockTable" -ForegroundColor Cyan
+Write-Host "AWS Region   : $AwsRegion" -ForegroundColor Cyan
 
 # ============================================================
 # TERRAFORM INIT
@@ -149,9 +188,15 @@ Write-Host "  1. TERRAFORM INITIALIZATION" -ForegroundColor Yellow
 Write-Host "========================================" -ForegroundColor Yellow
 Write-Host ""
 
-Write-Host "Terraform init..." -ForegroundColor Yellow
+Write-Host "Initializing Terraform with S3 backend..." -ForegroundColor Yellow
 
-& $TerraformExe init -input=false
+& $TerraformExe init `
+    -input=false `
+    -backend-config="bucket=$TerraformStateBucket" `
+    -backend-config="key=$TerraformStateKey" `
+    -backend-config="region=$AwsRegion" `
+    -backend-config="dynamodb_table=$TerraformLockTable" `
+    -backend-config="encrypt=true"
 
 if ($LASTEXITCODE -ne 0) {
     throw "Terraform init failed."
@@ -175,7 +220,12 @@ if ($LASTEXITCODE -ne 0) {
 # ============================================================
 
 Write-Host ""
-Write-Host "Selecting Terraform workspace..." -ForegroundColor Yellow
+Write-Host "========================================" -ForegroundColor Yellow
+Write-Host "  2. TERRAFORM WORKSPACE" -ForegroundColor Yellow
+Write-Host "========================================" -ForegroundColor Yellow
+Write-Host ""
+
+Write-Host "Checking Terraform workspaces..." -ForegroundColor Yellow
 
 $WorkspaceList = & $TerraformExe workspace list
 
@@ -186,13 +236,25 @@ foreach ($Workspace in $WorkspaceList) {
     $CleanWorkspace = $Workspace.Trim().TrimStart("*").Trim()
 
     if ($CleanWorkspace -eq $Environment) {
+
         $WorkspaceExists = $true
         break
     }
 }
 
 if (-not $WorkspaceExists) {
-    throw "Terraform workspace '$Environment' does not exist."
+
+    Write-Host ""
+    Write-Host "Error: Workspace '$Environment' does not exist." -ForegroundColor Red
+    Write-Host ""
+
+    Write-Host "Available workspaces:" -ForegroundColor Yellow
+
+    & $TerraformExe workspace list
+
+    Set-Location $ProjectRoot
+
+    exit 1
 }
 
 Write-Host "Selecting workspace: $Environment" -ForegroundColor Yellow
@@ -204,7 +266,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # ============================================================
-# TERRAFORM.TFVARS
+# TERRAFORM VARIABLES
 # ============================================================
 
 $TerraformTfvars = Join-Path $TerraformPath "terraform.tfvars"
@@ -213,11 +275,45 @@ Write-Host ""
 Write-Host "Checking Terraform variables..." -ForegroundColor Yellow
 
 if (-not (Test-Path $TerraformTfvars)) {
-    throw "terraform.tfvars was not found: $TerraformTfvars"
+
+    Write-Host "Warning: terraform.tfvars was not found." -ForegroundColor Yellow
+    Write-Host "Continuing because variables are supplied through -var." -ForegroundColor Yellow
+
+}
+else {
+
+    Write-Host "Using:" -ForegroundColor Green
+    Write-Host $TerraformTfvars -ForegroundColor Cyan
 }
 
-Write-Host "Using:" -ForegroundColor Green
-Write-Host $TerraformTfvars -ForegroundColor Cyan
+# ============================================================
+# PRODUCTION TFVARS
+# ============================================================
+
+$ProdTfvars = Join-Path $TerraformPath "prod.tfvars"
+
+if ($Environment -eq "prod" -and (Test-Path $ProdTfvars)) {
+
+    Write-Host ""
+    Write-Host "Production variables detected:" -ForegroundColor Yellow
+    Write-Host $ProdTfvars -ForegroundColor Cyan
+}
+
+# ============================================================
+# DEFINE APPLICATION S3 BUCKETS
+# ============================================================
+
+$FrontendBucket = "$ProjectName-$Environment-frontend-$AwsAccountId"
+$MemoryBucket = "$ProjectName-$Environment-memory-$AwsAccountId"
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Yellow
+Write-Host "  APPLICATION RESOURCES" -ForegroundColor Yellow
+Write-Host "========================================" -ForegroundColor Yellow
+Write-Host ""
+
+Write-Host "Frontend Bucket : $FrontendBucket" -ForegroundColor Cyan
+Write-Host "Memory Bucket   : $MemoryBucket" -ForegroundColor Cyan
 
 # ============================================================
 # GET TERRAFORM OUTPUTS
@@ -244,17 +340,31 @@ function Get-TerraformOutput {
     return $Result.Trim()
 }
 
-$FrontendBucket = Get-TerraformOutput "s3_frontend_bucket"
+$TerraformFrontendBucket = Get-TerraformOutput "s3_frontend_bucket"
 $LambdaFunctionName = Get-TerraformOutput "lambda_function_name"
-$AwsRegion = Get-TerraformOutput "aws_region"
+$TerraformAwsRegion = Get-TerraformOutput "aws_region"
 
-if ([string]::IsNullOrWhiteSpace($AwsRegion)) {
-    $AwsRegion = "us-east-1"
+# ============================================================
+# USE TERRAFORM OUTPUTS WHEN AVAILABLE
+# ============================================================
+
+if (-not [string]::IsNullOrWhiteSpace($TerraformFrontendBucket)) {
+
+    Write-Host ""
+    Write-Host "Terraform Frontend Bucket:" -ForegroundColor Yellow
+    Write-Host $TerraformFrontendBucket -ForegroundColor Cyan
+
+    $FrontendBucket = $TerraformFrontendBucket
+}
+
+if (-not [string]::IsNullOrWhiteSpace($TerraformAwsRegion)) {
+    $AwsRegion = $TerraformAwsRegion
 }
 
 Write-Host ""
 Write-Host "AWS Region      : $AwsRegion" -ForegroundColor Cyan
 Write-Host "Frontend Bucket : $FrontendBucket" -ForegroundColor Cyan
+Write-Host "Memory Bucket   : $MemoryBucket" -ForegroundColor Cyan
 Write-Host "Lambda          : $LambdaFunctionName" -ForegroundColor Cyan
 
 # ============================================================
@@ -269,17 +379,23 @@ Write-Host ""
 
 Write-Host "The following Terraform workspace will be destroyed:" -ForegroundColor Yellow
 Write-Host ""
+
 Write-Host "    Project     : $ProjectName" -ForegroundColor Cyan
 Write-Host "    Environment : $Environment" -ForegroundColor Cyan
 Write-Host "    AWS Account : $AwsAccountId" -ForegroundColor Cyan
 Write-Host "    AWS Region  : $AwsRegion" -ForegroundColor Cyan
+Write-Host "    Workspace   : $Environment" -ForegroundColor Cyan
 Write-Host ""
 
 $Confirmation = Read-Host "Type DESTROY $Environment to continue"
 
 if ($Confirmation -cne "DESTROY $Environment") {
+
     Write-Host ""
     Write-Host "Destroy cancelled." -ForegroundColor Yellow
+
+    Set-Location $ProjectRoot
+
     exit 0
 }
 
@@ -287,19 +403,32 @@ if ($Confirmation -cne "DESTROY $Environment") {
 # EMPTY FRONTEND S3 BUCKET
 # ============================================================
 
-if (-not [string]::IsNullOrWhiteSpace($FrontendBucket)) {
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Yellow
+Write-Host "  3. EMPTYING FRONTEND S3 BUCKET" -ForegroundColor Yellow
+Write-Host "========================================" -ForegroundColor Yellow
+Write-Host ""
 
-    Write-Host ""
-    Write-Host "========================================" -ForegroundColor Yellow
-    Write-Host "  2. EMPTYING FRONTEND S3 BUCKET" -ForegroundColor Yellow
-    Write-Host "========================================" -ForegroundColor Yellow
-    Write-Host ""
+Write-Host "Bucket:" -ForegroundColor Cyan
+Write-Host "s3://$FrontendBucket/" -ForegroundColor Cyan
+Write-Host ""
 
-    Write-Host "Bucket:" -ForegroundColor Cyan
-    Write-Host "s3://$FrontendBucket/" -ForegroundColor Cyan
-    Write-Host ""
+Write-Host "Checking frontend bucket..." -ForegroundColor Yellow
 
-    Write-Host "Removing frontend objects..." -ForegroundColor Yellow
+$FrontendBucketExists = $true
+
+aws s3api head-bucket `
+    --bucket $FrontendBucket `
+    --region $AwsRegion `
+    2>$null
+
+if ($LASTEXITCODE -ne 0) {
+    $FrontendBucketExists = $false
+}
+
+if ($FrontendBucketExists) {
+
+    Write-Host "Emptying $FrontendBucket..." -ForegroundColor Yellow
 
     aws s3 rm `
         "s3://$FrontendBucket/" `
@@ -310,26 +439,90 @@ if (-not [string]::IsNullOrWhiteSpace($FrontendBucket)) {
         throw "Failed to empty frontend S3 bucket."
     }
 
-    Write-Host ""
     Write-Host "Frontend bucket emptied." -ForegroundColor Green
+
+}
+else {
+
+    Write-Host "Frontend bucket not found or already deleted." -ForegroundColor Gray
 }
 
 # ============================================================
-# TERRAFORM PLAN DESTROY
+# EMPTY MEMORY S3 BUCKET
 # ============================================================
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Yellow
-Write-Host "  3. TERRAFORM DESTROY PLAN" -ForegroundColor Yellow
+Write-Host "  4. EMPTYING MEMORY S3 BUCKET" -ForegroundColor Yellow
+Write-Host "========================================" -ForegroundColor Yellow
+Write-Host ""
+
+Write-Host "Bucket:" -ForegroundColor Cyan
+Write-Host "s3://$MemoryBucket/" -ForegroundColor Cyan
+Write-Host ""
+
+Write-Host "Checking memory bucket..." -ForegroundColor Yellow
+
+$MemoryBucketExists = $true
+
+aws s3api head-bucket `
+    --bucket $MemoryBucket `
+    --region $AwsRegion `
+    2>$null
+
+if ($LASTEXITCODE -ne 0) {
+    $MemoryBucketExists = $false
+}
+
+if ($MemoryBucketExists) {
+
+    Write-Host "Emptying $MemoryBucket..." -ForegroundColor Yellow
+
+    aws s3 rm `
+        "s3://$MemoryBucket/" `
+        --recursive `
+        --region $AwsRegion
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to empty memory S3 bucket."
+    }
+
+    Write-Host "Memory bucket emptied." -ForegroundColor Green
+
+}
+else {
+
+    Write-Host "Memory bucket not found or already deleted." -ForegroundColor Gray
+}
+
+# ============================================================
+# TERRAFORM DESTROY PLAN
+# ============================================================
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Yellow
+Write-Host "  5. TERRAFORM DESTROY PLAN" -ForegroundColor Yellow
 Write-Host "========================================" -ForegroundColor Yellow
 Write-Host ""
 
 Write-Host "Generating destroy plan..." -ForegroundColor Yellow
 
-& $TerraformExe plan `
-    -destroy `
-    -var="project_name=$ProjectName" `
-    -var="environment=$Environment"
+if ($Environment -eq "prod" -and (Test-Path $ProdTfvars)) {
+
+    & $TerraformExe plan `
+        -destroy `
+        -var-file="$ProdTfvars" `
+        -var="project_name=$ProjectName" `
+        -var="environment=$Environment"
+
+}
+else {
+
+    & $TerraformExe plan `
+        -destroy `
+        -var="project_name=$ProjectName" `
+        -var="environment=$Environment"
+}
 
 if ($LASTEXITCODE -ne 0) {
     throw "Terraform destroy plan failed."
@@ -341,36 +534,51 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Red
-Write-Host "  4. DESTROYING INFRASTRUCTURE" -ForegroundColor Red
+Write-Host "  6. DESTROYING INFRASTRUCTURE" -ForegroundColor Red
 Write-Host "========================================" -ForegroundColor Red
 Write-Host ""
 
 Write-Host "Running Terraform destroy..." -ForegroundColor Red
 Write-Host ""
 
-& $TerraformExe destroy `
-    -var="project_name=$ProjectName" `
-    -var="environment=$Environment" `
-    -auto-approve
+if ($Environment -eq "prod" -and (Test-Path $ProdTfvars)) {
+
+    & $TerraformExe destroy `
+        -var-file="$ProdTfvars" `
+        -var="project_name=$ProjectName" `
+        -var="environment=$Environment" `
+        -auto-approve
+
+}
+else {
+
+    & $TerraformExe destroy `
+        -var="project_name=$ProjectName" `
+        -var="environment=$Environment" `
+        -auto-approve
+}
 
 if ($LASTEXITCODE -ne 0) {
     throw "Terraform destroy failed."
 }
 
 # ============================================================
-# VERIFY DESTROY
+# VERIFY TERRAFORM DESTROY
 # ============================================================
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Yellow
-Write-Host "  5. VERIFYING DESTROY" -ForegroundColor Yellow
+Write-Host "  7. VERIFYING DESTROY" -ForegroundColor Yellow
 Write-Host "========================================" -ForegroundColor Yellow
 Write-Host ""
+
+Write-Host "Checking Terraform state..." -ForegroundColor Yellow
 
 $RemainingResources = & $TerraformExe state list 2>$null
 
 if ($LASTEXITCODE -eq 0 -and $RemainingResources) {
 
+    Write-Host ""
     Write-Host "WARNING: Terraform state still contains resources:" -ForegroundColor Yellow
     Write-Host ""
 
@@ -382,11 +590,68 @@ if ($LASTEXITCODE -eq 0 -and $RemainingResources) {
 else {
 
     Write-Host "Terraform state is empty." -ForegroundColor Green
-
 }
 
 # ============================================================
-# FINAL
+# VERIFY FRONTEND S3 BUCKET
+# ============================================================
+
+Write-Host ""
+Write-Host "Checking frontend S3 bucket..." -ForegroundColor Yellow
+
+$FrontendStillExists = $true
+
+aws s3api head-bucket `
+    --bucket $FrontendBucket `
+    --region $AwsRegion `
+    2>$null
+
+if ($LASTEXITCODE -ne 0) {
+    $FrontendStillExists = $false
+}
+
+if ($FrontendStillExists) {
+
+    Write-Host "WARNING: Frontend bucket still exists:" -ForegroundColor Yellow
+    Write-Host "  $FrontendBucket" -ForegroundColor Yellow
+
+}
+else {
+
+    Write-Host "Frontend bucket no longer exists." -ForegroundColor Green
+}
+
+# ============================================================
+# VERIFY MEMORY S3 BUCKET
+# ============================================================
+
+Write-Host ""
+Write-Host "Checking memory S3 bucket..." -ForegroundColor Yellow
+
+$MemoryStillExists = $true
+
+aws s3api head-bucket `
+    --bucket $MemoryBucket `
+    --region $AwsRegion `
+    2>$null
+
+if ($LASTEXITCODE -ne 0) {
+    $MemoryStillExists = $false
+}
+
+if ($MemoryStillExists) {
+
+    Write-Host "WARNING: Memory bucket still exists:" -ForegroundColor Yellow
+    Write-Host "  $MemoryBucket" -ForegroundColor Yellow
+
+}
+else {
+
+    Write-Host "Memory bucket no longer exists." -ForegroundColor Green
+}
+
+# ============================================================
+# FINAL SUMMARY
 # ============================================================
 
 Set-Location $ProjectRoot
@@ -401,15 +666,49 @@ Write-Host "Environment    : $Environment" -ForegroundColor Cyan
 Write-Host "Project        : $ProjectName" -ForegroundColor Cyan
 Write-Host "AWS Account    : $AwsAccountId" -ForegroundColor Cyan
 Write-Host "AWS Region     : $AwsRegion" -ForegroundColor Cyan
+Write-Host "Terraform State: $TerraformStateKey" -ForegroundColor Cyan
 Write-Host ""
 
-Write-Host "Terraform infrastructure has been destroyed." -ForegroundColor Green
+Write-Host "Terraform application infrastructure has been destroyed." -ForegroundColor Green
 Write-Host ""
 
-Write-Host "CloudFront     : DISABLED" -ForegroundColor DarkYellow
-Write-Host "ACM            : DISABLED" -ForegroundColor DarkYellow
-Write-Host "Route53        : DISABLED" -ForegroundColor DarkYellow
+if ($FrontendStillExists) {
+    Write-Host "Frontend S3    : STILL EXISTS" -ForegroundColor Yellow
+}
+else {
+    Write-Host "Frontend S3    : DESTROYED" -ForegroundColor Green
+}
+
+if ($MemoryStillExists) {
+    Write-Host "Memory S3      : STILL EXISTS" -ForegroundColor Yellow
+}
+else {
+    Write-Host "Memory S3      : DESTROYED" -ForegroundColor Green
+}
 
 Write-Host ""
+
+if ($RemainingResources) {
+
+    Write-Host "Terraform State: RESOURCES REMAIN" -ForegroundColor Yellow
+
+}
+else {
+
+    Write-Host "Terraform State: EMPTY" -ForegroundColor Green
+}
+
+Write-Host ""
+Write-Host "NOTE: The Terraform backend resources were NOT destroyed." -ForegroundColor Cyan
+Write-Host "This includes the Terraform state bucket and lock table." -ForegroundColor Cyan
+Write-Host ""
+
+Write-Host "To remove the Terraform workspace completely, run:" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "    cd `"$TerraformPath`"" -ForegroundColor White
+Write-Host "    $TerraformExe workspace select default" -ForegroundColor White
+Write-Host "    $TerraformExe workspace delete $Environment" -ForegroundColor White
+Write-Host ""
+
 Write-Host "Destroy finished." -ForegroundColor Green
 Write-Host ""

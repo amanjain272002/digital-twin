@@ -213,7 +213,32 @@ Set-Location $TerraformPath
 
 Write-Host "Terraform init..." -ForegroundColor Yellow
 
-& $TerraformExe init -input=false
+$AwsRegion = if ($env:DEFAULT_AWS_REGION) {
+    $env:DEFAULT_AWS_REGION
+}
+else {
+    "us-east-1"
+}
+
+$TerraformStateBucket = "twin-terraform-state-$AwsAccountId"
+$TerraformStateKey = "$Environment/terraform.tfstate"
+$TerraformLockTable = "twin-terraform-locks"
+
+Write-Host ""
+Write-Host "Terraform backend configuration:" -ForegroundColor Cyan
+Write-Host "  Bucket : $TerraformStateBucket" -ForegroundColor Cyan
+Write-Host "  Key    : $TerraformStateKey" -ForegroundColor Cyan
+Write-Host "  Region : $AwsRegion" -ForegroundColor Cyan
+Write-Host "  Locks  : $TerraformLockTable" -ForegroundColor Cyan
+Write-Host "  Encrypt: true" -ForegroundColor Cyan
+Write-Host ""
+
+& $TerraformExe init -input=false `
+    -backend-config="bucket=$TerraformStateBucket" `
+    -backend-config="key=$TerraformStateKey" `
+    -backend-config="region=$AwsRegion" `
+    -backend-config="dynamodb_table=$TerraformLockTable" `
+    -backend-config="encrypt=true"
 
 if ($LASTEXITCODE -ne 0) {
     throw "Terraform init failed."
@@ -298,9 +323,7 @@ Write-Host ""
 Write-Host "Checking Terraform variables..." -ForegroundColor Yellow
 
 if (-not (Test-Path $TerraformTfvars)) {
-
     throw "terraform.tfvars was not found: $TerraformTfvars"
-
 }
 
 Write-Host "Using:" -ForegroundColor Green
@@ -313,13 +336,6 @@ Write-Host $TerraformTfvars -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Applying Terraform..." -ForegroundColor Yellow
 Write-Host ""
-
-# terraform.tfvars is automatically loaded by Terraform.
-#
-# We explicitly pass project_name and environment so the
-# command-line parameters override those values if present.
-#
-# No dev.tfvars/prod.tfvars is used.
 
 & $TerraformExe apply `
     -var="project_name=$ProjectName" `
@@ -365,7 +381,12 @@ $FrontendBucket = Get-TerraformOutput "s3_frontend_bucket"
 $FrontendUrl = Get-TerraformOutput "frontend_url"
 $LambdaFunctionName = Get-TerraformOutput "lambda_function_name"
 $BedrockModel = Get-TerraformOutput "bedrock_model_id"
-$AwsRegion = Get-TerraformOutput "aws_region"
+
+$TerraformAwsRegion = Get-TerraformOutput "aws_region"
+
+if (-not [string]::IsNullOrWhiteSpace($TerraformAwsRegion)) {
+    $AwsRegion = $TerraformAwsRegion
+}
 
 if ([string]::IsNullOrWhiteSpace($ApiUrl)) {
     throw "Could not retrieve Terraform output: api_gateway_url"
@@ -636,8 +657,15 @@ Write-Host ""
 
 Write-Host "Environment    : $Environment" -ForegroundColor Cyan
 Write-Host "Project        : $ProjectName" -ForegroundColor Cyan
+Write-Host "AWS Account    : $AwsAccountId" -ForegroundColor Cyan
 Write-Host "AWS Region     : $AwsRegion" -ForegroundColor Cyan
 Write-Host "Bedrock Model  : $BedrockModel" -ForegroundColor Cyan
+Write-Host ""
+
+Write-Host "Terraform State:" -ForegroundColor Cyan
+Write-Host "  S3 Bucket    : $TerraformStateBucket" -ForegroundColor Cyan
+Write-Host "  State Key    : $TerraformStateKey" -ForegroundColor Cyan
+Write-Host "  Lock Table   : $TerraformLockTable" -ForegroundColor Cyan
 Write-Host ""
 
 Write-Host "Frontend URL   : $FrontendUrl" -ForegroundColor Cyan

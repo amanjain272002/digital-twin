@@ -1,0 +1,350 @@
+name: Deploy Digital Twin
+
+# ============================================================
+# TRIGGERS
+# ============================================================
+
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to deploy"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+
+
+# ============================================================
+# PERMISSIONS
+# ============================================================
+
+# Required for GitHub OIDC authentication with AWS.
+permissions:
+  id-token: write
+  contents: read
+
+
+# ============================================================
+# DEPLOYMENT JOB
+# ============================================================
+
+jobs:
+
+  deploy:
+
+    name: Deploy to ${{ github.event.inputs.environment || 'dev' }}
+
+    runs-on: ubuntu-latest
+
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+
+
+    # ========================================================
+    # DEPLOYMENT STEPS
+    # ========================================================
+
+    steps:
+
+      # ------------------------------------------------------
+      # 1. CHECKOUT
+      # ------------------------------------------------------
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+
+      # ------------------------------------------------------
+      # 2. CONFIGURE AWS USING GITHUB OIDC
+      # ------------------------------------------------------
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+
+          role-session-name: github-actions-deploy
+
+          aws-region: ${{ secrets.DEFAULT_AWS_REGION }}
+
+
+      # ------------------------------------------------------
+      # 3. VERIFY AWS IDENTITY
+      # ------------------------------------------------------
+
+      - name: Verify AWS identity
+        run: |
+          echo "AWS Account:"
+          aws sts get-caller-identity
+
+          echo ""
+          echo "AWS Region:"
+          echo "${AWS_REGION}"
+
+
+      # ------------------------------------------------------
+      # 4. SET UP PYTHON
+      # ------------------------------------------------------
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+
+        with:
+          python-version: "3.12"
+
+
+      # ------------------------------------------------------
+      # 5. INSTALL UV
+      # ------------------------------------------------------
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+
+      # ------------------------------------------------------
+      # 6. SET UP TERRAFORM
+      # ------------------------------------------------------
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+        with:
+          terraform_wrapper: false
+
+
+      # ------------------------------------------------------
+      # 7. SET UP NODE.JS
+      # ------------------------------------------------------
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+
+        with:
+          node-version: "20"
+
+          cache: "npm"
+
+          cache-dependency-path: frontend/package-lock.json
+
+
+      # ------------------------------------------------------
+      # 8. VERIFY TOOLING
+      # ------------------------------------------------------
+
+      - name: Verify tooling
+        run: |
+          echo "========================================"
+          echo "         TOOL VERSIONS"
+          echo "========================================"
+
+          echo ""
+          echo "Python:"
+          python --version
+
+          echo ""
+          echo "Node:"
+          node --version
+
+          echo ""
+          echo "npm:"
+          npm --version
+
+          echo ""
+          echo "Terraform:"
+          terraform version
+
+          echo ""
+          echo "AWS CLI:"
+          aws --version
+
+          echo ""
+          echo "========================================"
+
+
+      # ------------------------------------------------------
+      # 9. RUN DEPLOYMENT SCRIPT
+      # ------------------------------------------------------
+
+      - name: Run Deployment Script
+        run: |
+
+          echo "========================================"
+          echo "       STARTING DEPLOYMENT"
+          echo "========================================"
+
+          export AWS_ACCOUNT_ID=$(aws sts get-caller-identity \
+            --query Account \
+            --output text)
+
+          export DEFAULT_AWS_REGION="${{ secrets.DEFAULT_AWS_REGION }}"
+
+          echo ""
+          echo "AWS Account : $AWS_ACCOUNT_ID"
+          echo "AWS Region  : $DEFAULT_AWS_REGION"
+          echo "Environment : ${{ github.event.inputs.environment || 'dev' }}"
+
+          echo ""
+
+          chmod +x scripts/deploy.sh
+
+          ./scripts/deploy.sh \
+            "${{ github.event.inputs.environment || 'dev' }}"
+
+
+      # ------------------------------------------------------
+      # 10. GET TERRAFORM OUTPUTS
+      # ------------------------------------------------------
+
+      - name: Get Deployment Outputs
+        id: deploy_outputs
+
+        working-directory: ./terraform
+
+        run: |
+
+          ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+
+          echo "Selecting Terraform workspace: $ENVIRONMENT"
+
+          terraform workspace select "$ENVIRONMENT"
+
+
+          # -----------------------------------------------
+          # API Gateway URL
+          # -----------------------------------------------
+
+          API_URL=$(terraform output -raw api_gateway_url 2>/dev/null || true)
+
+          if [ -z "$API_URL" ]; then
+            API_URL="Not available"
+          fi
+
+
+          # -----------------------------------------------
+          # Frontend S3 Bucket
+          # -----------------------------------------------
+
+          FRONTEND_BUCKET=$(terraform output -raw s3_frontend_bucket 2>/dev/null || true)
+
+          if [ -z "$FRONTEND_BUCKET" ]; then
+            FRONTEND_BUCKET="Not available"
+          fi
+
+
+          # -----------------------------------------------
+          # Lambda Function
+          # -----------------------------------------------
+
+          LAMBDA_FUNCTION=$(terraform output -raw lambda_function_name 2>/dev/null || true)
+
+          if [ -z "$LAMBDA_FUNCTION" ]; then
+            LAMBDA_FUNCTION="Not available"
+          fi
+
+
+          # -----------------------------------------------
+          # AWS Region
+          # -----------------------------------------------
+
+          AWS_REGION_OUTPUT=$(terraform output -raw aws_region 2>/dev/null || true)
+
+          if [ -z "$AWS_REGION_OUTPUT" ]; then
+            AWS_REGION_OUTPUT="${{ secrets.DEFAULT_AWS_REGION }}"
+          fi
+
+
+          # -----------------------------------------------
+          # Save outputs
+          # -----------------------------------------------
+
+          echo "api_url=$API_URL" >> "$GITHUB_OUTPUT"
+
+          echo "frontend_bucket=$FRONTEND_BUCKET" >> "$GITHUB_OUTPUT"
+
+          echo "lambda_function=$LAMBDA_FUNCTION" >> "$GITHUB_OUTPUT"
+
+          echo "aws_region=$AWS_REGION_OUTPUT" >> "$GITHUB_OUTPUT"
+
+
+          # -----------------------------------------------
+          # Display outputs
+          # -----------------------------------------------
+
+          echo ""
+          echo "========================================"
+          echo "       DEPLOYMENT OUTPUTS"
+          echo "========================================"
+
+          echo ""
+          echo "API Gateway:"
+          echo "$API_URL"
+
+          echo ""
+          echo "Frontend Bucket:"
+          echo "$FRONTEND_BUCKET"
+
+          echo ""
+          echo "Lambda Function:"
+          echo "$LAMBDA_FUNCTION"
+
+          echo ""
+          echo "AWS Region:"
+          echo "$AWS_REGION_OUTPUT"
+
+          echo ""
+          echo "========================================"
+
+
+      # ------------------------------------------------------
+      # 11. DEPLOYMENT SUMMARY
+      # ------------------------------------------------------
+
+      - name: Deployment Summary
+
+        run: |
+
+          echo ""
+          echo "========================================"
+          echo "       DEPLOYMENT COMPLETE"
+          echo "========================================"
+          echo ""
+
+          echo "Environment:"
+          echo "${{ github.event.inputs.environment || 'dev' }}"
+
+          echo ""
+
+          echo "API Gateway:"
+          echo "${{ steps.deploy_outputs.outputs.api_url }}"
+
+          echo ""
+
+          echo "Frontend S3 Bucket:"
+          echo "${{ steps.deploy_outputs.outputs.frontend_bucket }}"
+
+          echo ""
+
+          echo "Lambda Function:"
+          echo "${{ steps.deploy_outputs.outputs.lambda_function }}"
+
+          echo ""
+
+          echo "AWS Region:"
+          echo "${{ steps.deploy_outputs.outputs.aws_region }}"
+
+          echo ""
+
+          echo "========================================"
+          echo "           SUCCESS"
+          echo "========================================"

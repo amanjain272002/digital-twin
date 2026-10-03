@@ -1,0 +1,221 @@
+name: Destroy Environment
+
+# ============================================================
+# MANUAL TRIGGER
+# ============================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+
+      environment:
+        description: "Environment to destroy"
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+
+      confirm:
+        description: "Type the environment name to confirm destruction"
+        required: true
+        type: string
+
+
+# ============================================================
+# GITHUB OIDC PERMISSIONS
+# ============================================================
+
+permissions:
+  id-token: write
+  contents: read
+
+
+# ============================================================
+# DESTROY JOB
+# ============================================================
+
+jobs:
+
+  destroy:
+
+    name: Destroy ${{ github.event.inputs.environment }}
+
+    runs-on: ubuntu-latest
+
+    environment: ${{ github.event.inputs.environment }}
+
+
+    steps:
+
+      # ======================================================
+      # 1. VERIFY DESTRUCTION CONFIRMATION
+      # ======================================================
+
+      - name: Verify confirmation
+        shell: bash
+        run: |
+
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
+          CONFIRMATION="${{ github.event.inputs.confirm }}"
+
+          echo "========================================"
+          echo "       DESTRUCTION CONFIRMATION"
+          echo "========================================"
+          echo ""
+
+          echo "Environment : $ENVIRONMENT"
+          echo "Confirmation: $CONFIRMATION"
+          echo ""
+
+          if [ "$CONFIRMATION" != "$ENVIRONMENT" ]; then
+
+            echo "❌ Confirmation does not match environment name!"
+            echo ""
+            echo "You entered : '$CONFIRMATION'"
+            echo "Expected    : '$ENVIRONMENT'"
+            echo ""
+
+            exit 1
+
+          fi
+
+          echo "✅ Destruction confirmed for $ENVIRONMENT"
+          echo ""
+
+
+      # ======================================================
+      # 2. CHECKOUT REPOSITORY
+      # ======================================================
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+
+      # ======================================================
+      # 3. CONFIGURE AWS USING OIDC
+      # ======================================================
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+
+        with:
+
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+
+          role-session-name: github-actions-destroy
+
+          aws-region: ${{ secrets.DEFAULT_AWS_REGION }}
+
+
+      # ======================================================
+      # 4. VERIFY AWS IDENTITY
+      # ======================================================
+
+      - name: Verify AWS identity
+        shell: bash
+        run: |
+
+          echo "========================================"
+          echo "          AWS IDENTITY"
+          echo "========================================"
+          echo ""
+
+          aws sts get-caller-identity
+
+          echo ""
+          echo "AWS Region:"
+          echo "${AWS_REGION}"
+
+          echo ""
+
+
+      # ======================================================
+      # 5. SETUP TERRAFORM
+      # ======================================================
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+        with:
+          terraform_wrapper: false
+
+
+      # ======================================================
+      # 6. CHECK TERRAFORM
+      # ======================================================
+
+      - name: Check Terraform
+        shell: bash
+        run: |
+
+          echo "========================================"
+          echo "          TERRAFORM VERSION"
+          echo "========================================"
+          echo ""
+
+          terraform version
+
+          echo ""
+
+
+      # ======================================================
+      # 7. RUN DESTROY SCRIPT
+      # ======================================================
+
+      - name: Run Destroy Script
+        shell: bash
+
+        env:
+
+          DEFAULT_AWS_REGION: ${{ secrets.DEFAULT_AWS_REGION }}
+
+        run: |
+
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
+
+          echo "========================================"
+          echo "       DESTROYING ENVIRONMENT"
+          echo "========================================"
+          echo ""
+
+          echo "Environment : $ENVIRONMENT"
+          echo "AWS Region  : $DEFAULT_AWS_REGION"
+          echo ""
+
+          # Make destroy script executable
+          chmod +x scripts/destroy.sh
+
+          # Run destroy script
+          ./scripts/destroy.sh "$ENVIRONMENT"
+
+
+      # ======================================================
+      # 8. COMPLETION MESSAGE
+      # ======================================================
+
+      - name: Destruction Complete
+        shell: bash
+        run: |
+
+          echo ""
+          echo "========================================"
+          echo "       DESTROY COMPLETE"
+          echo "========================================"
+          echo ""
+
+          echo "Environment:"
+          echo "${{ github.event.inputs.environment }}"
+
+          echo ""
+
+          echo "✅ Environment ${{ github.event.inputs.environment }} has been destroyed."
+
+          echo ""
+
+          echo "CloudFront: NOT USED"
+          echo "ACM       : NOT USED"
+          echo "Route53   : NOT USED"
+
+          echo ""
