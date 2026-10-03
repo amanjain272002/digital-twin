@@ -1,0 +1,21 @@
+{
+  "full_name": "Aman Jain",
+  "name": "Aman",
+  "current_role": "Software Engineer",
+  "location": "San Francisco, CA",
+  "email": "aman.jain@example.com",
+  "linkedin": "linkedin.com/in/amanjain",
+  "specialties": [
+    "Cloud Computing",
+    "Python Programming",
+    "DevOps"
+  ],
+  "years_experience": 10,
+  "education": [
+    {
+      "degree": "1st Degree",
+      "institution": "My University",
+      "year": "2020"
+    }
+  ]
+}
