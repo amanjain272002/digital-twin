@@ -1,9 +1,5 @@
 name: Deploy Digital Twin
 
-# ============================================================
-# TRIGGERS
-# ============================================================
-
 on:
   push:
     branches:
@@ -21,164 +17,80 @@ on:
           - test
           - prod
 
-
-# ============================================================
-# GITHUB OIDC PERMISSIONS
-# ============================================================
-
 permissions:
   id-token: write
   contents: read
 
-
-# ============================================================
-# DEPLOYMENT JOB
-# ============================================================
-
 jobs:
-
   deploy:
-
     name: Deploy to ${{ github.event.inputs.environment || 'dev' }}
-
     runs-on: ubuntu-latest
 
-    environment: ${{ github.event.inputs.environment || 'dev' }}
-
-
-    # ========================================================
-    # STEPS
-    # ========================================================
-
     steps:
-
-      # ------------------------------------------------------
+      # ============================================================
       # 1. CHECKOUT
-      # ------------------------------------------------------
+      # ============================================================
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ============================================================
+      # 2. SHOW GITHUB CONTEXT
+      # ============================================================
 
-      # ------------------------------------------------------
-      # 2. DISPLAY GITHUB OIDC CONTEXT
-      # ------------------------------------------------------
-
-      - name: Verify GitHub repository context
+      - name: Show GitHub context
         run: |
           echo "========================================"
-          echo "       GITHUB OIDC CONTEXT"
+          echo "       GITHUB ACTIONS CONTEXT"
           echo "========================================"
 
-          echo ""
           echo "Repository:"
           echo "${{ github.repository }}"
 
-          echo ""
           echo "Repository ID:"
           echo "${{ github.repository_id }}"
 
-          echo ""
           echo "Repository Owner:"
           echo "${{ github.repository_owner }}"
 
-          echo ""
           echo "Repository Owner ID:"
           echo "${{ github.repository_owner_id }}"
 
-          echo ""
           echo "Ref:"
           echo "${{ github.ref }}"
 
-          echo ""
           echo "Event:"
           echo "${{ github.event_name }}"
 
-          echo ""
           echo "Environment:"
           echo "${{ github.event.inputs.environment || 'dev' }}"
 
-          echo ""
           echo "========================================"
 
-
-      # ------------------------------------------------------
-      # 3. CHECK REQUIRED SECRETS
-      # ------------------------------------------------------
-
-      - name: Verify required GitHub secrets
-        env:
-          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
-          DEFAULT_AWS_REGION: ${{ secrets.DEFAULT_AWS_REGION }}
-          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-        run: |
-
-          echo "========================================"
-          echo "       CHECKING GITHUB SECRETS"
-          echo "========================================"
-
-          if [ -z "$AWS_ROLE_ARN" ]; then
-            echo "❌ AWS_ROLE_ARN is missing."
-            exit 1
-          fi
-
-          if [ -z "$DEFAULT_AWS_REGION" ]; then
-            echo "❌ DEFAULT_AWS_REGION is missing."
-            exit 1
-          fi
-
-          if [ -z "$AWS_ACCOUNT_ID" ]; then
-            echo "❌ AWS_ACCOUNT_ID is missing."
-            exit 1
-          fi
-
-          echo ""
-          echo "AWS_ROLE_ARN:"
-          echo "$AWS_ROLE_ARN"
-
-          echo ""
-          echo "AWS_REGION:"
-          echo "$DEFAULT_AWS_REGION"
-
-          echo ""
-          echo "AWS_ACCOUNT_ID:"
-          echo "$AWS_ACCOUNT_ID"
-
-          echo ""
-          echo "Required secrets are present."
-
-          echo ""
-          echo "========================================"
-
-
-      # ------------------------------------------------------
-      # 4. CONFIGURE AWS USING GITHUB OIDC
-      # ------------------------------------------------------
+      # ============================================================
+      # 3. CONFIGURE AWS OIDC
+      # ============================================================
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
-
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-
+          role-to-assume: arn:aws:iam::241785578860:role/github-actions-twin-deploy
           role-session-name: github-actions-deploy
-
           aws-region: ${{ secrets.DEFAULT_AWS_REGION }}
+          audience: sts.amazonaws.com
 
-
-      # ------------------------------------------------------
-      # 5. VERIFY AWS IDENTITY
-      # ------------------------------------------------------
+      # ============================================================
+      # 4. VERIFY AWS
+      # ============================================================
 
       - name: Verify AWS identity
         run: |
-
           echo "========================================"
           echo "       AWS AUTHENTICATION SUCCESS"
           echo "========================================"
 
           echo ""
-          echo "AWS Account:"
+          echo "AWS Identity:"
           aws sts get-caller-identity
 
           echo ""
@@ -186,112 +98,77 @@ jobs:
           echo "$AWS_REGION"
 
           echo ""
-          echo "AWS Default Region:"
-          echo "$AWS_DEFAULT_REGION"
-
-          echo ""
           echo "========================================"
 
-
-      # ------------------------------------------------------
-      # 6. SET UP PYTHON
-      # ------------------------------------------------------
+      # ============================================================
+      # 5. PYTHON
+      # ============================================================
 
       - name: Set up Python
         uses: actions/setup-python@v5
-
         with:
           python-version: "3.12"
 
-
-      # ------------------------------------------------------
-      # 7. INSTALL UV
-      # ------------------------------------------------------
+      # ============================================================
+      # 6. UV
+      # ============================================================
 
       - name: Install uv
         run: |
-
           curl -LsSf https://astral.sh/uv/install.sh | sh
-
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-
-      # ------------------------------------------------------
-      # 8. SET UP TERRAFORM
-      # ------------------------------------------------------
+      # ============================================================
+      # 7. TERRAFORM
+      # ============================================================
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
-
         with:
           terraform_wrapper: false
 
-
-      # ------------------------------------------------------
-      # 9. SET UP NODE.JS
-      # ------------------------------------------------------
+      # ============================================================
+      # 8. NODE
+      # ============================================================
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
-
         with:
           node-version: "20"
-
-          cache: "npm"
-
+          cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-
-      # ------------------------------------------------------
-      # 10. VERIFY TOOLING
-      # ------------------------------------------------------
+      # ============================================================
+      # 9. VERIFY TOOLING
+      # ============================================================
 
       - name: Verify tooling
         run: |
-
           echo "========================================"
           echo "         TOOL VERSIONS"
           echo "========================================"
 
-          echo ""
-          echo "Python:"
           python --version
-
-          echo ""
-          echo "Node:"
           node --version
-
-          echo ""
-          echo "npm:"
           npm --version
-
-          echo ""
-          echo "Terraform:"
           terraform version
-
-          echo ""
-          echo "AWS CLI:"
           aws --version
-
-          echo ""
-          echo "uv:"
           uv --version
 
-          echo ""
           echo "========================================"
 
+      # ============================================================
+      # 10. DEPLOY
+      # ============================================================
 
-      # ------------------------------------------------------
-      # 11. RUN DEPLOYMENT SCRIPT
-      # ------------------------------------------------------
-
-      - name: Run Deployment Script
+      - name: Run deployment script
         env:
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
           DEFAULT_AWS_REGION: ${{ secrets.DEFAULT_AWS_REGION }}
-          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
-
         run: |
+          set -e
+
+          ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
 
           echo "========================================"
           echo "       STARTING DEPLOYMENT"
@@ -301,237 +178,88 @@ jobs:
             --query Account \
             --output text)
 
-          echo ""
-          echo "AWS Account:"
-          echo "$CURRENT_ACCOUNT"
-
-          echo ""
-          echo "Expected Account:"
-          echo "$AWS_ACCOUNT_ID"
+          echo "AWS Account : $CURRENT_ACCOUNT"
+          echo "Expected    : $AWS_ACCOUNT_ID"
+          echo "AWS Region  : $DEFAULT_AWS_REGION"
+          echo "Environment : $ENVIRONMENT"
 
           if [ "$CURRENT_ACCOUNT" != "$AWS_ACCOUNT_ID" ]; then
-            echo ""
-            echo "❌ AWS account mismatch!"
-            echo "Expected: $AWS_ACCOUNT_ID"
-            echo "Actual:   $CURRENT_ACCOUNT"
+            echo "ERROR: AWS account mismatch."
             exit 1
           fi
 
-          echo ""
-          echo "AWS Region:"
-          echo "$DEFAULT_AWS_REGION"
-
-          echo ""
-          echo "Environment:"
-          echo "${{ github.event.inputs.environment || 'dev' }}"
-
-          echo ""
-          echo "Making deployment script executable..."
-
           chmod +x scripts/deploy.sh
 
-          echo ""
-          echo "Running deployment script..."
+          ./scripts/deploy.sh "$ENVIRONMENT"
 
-          ./scripts/deploy.sh \
-            "${{ github.event.inputs.environment || 'dev' }}"
+      # ============================================================
+      # 11. GET TERRAFORM OUTPUTS
+      # ============================================================
 
-          echo ""
-          echo "Deployment script completed."
-
-
-      # ------------------------------------------------------
-      # 12. GET TERRAFORM OUTPUTS
-      # ------------------------------------------------------
-
-      - name: Get Deployment Outputs
+      - name: Get deployment outputs
         id: deploy_outputs
-
         working-directory: ./terraform
-
         env:
           DEFAULT_AWS_REGION: ${{ secrets.DEFAULT_AWS_REGION }}
-
         run: |
-
-          echo "========================================"
-          echo "       READING TERRAFORM OUTPUTS"
-          echo "========================================"
+          set -e
 
           ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
 
-          echo ""
-          echo "Environment:"
-          echo "$ENVIRONMENT"
-
-          echo ""
-          echo "Selecting Terraform workspace..."
+          echo "Selecting workspace: $ENVIRONMENT"
 
           terraform workspace select "$ENVIRONMENT"
 
-
-          # ==================================================
-          # API GATEWAY
-          # ==================================================
-
           API_URL=$(terraform output -raw api_gateway_url 2>/dev/null || true)
-
-          if [ -z "$API_URL" ]; then
-            API_URL="Not available"
-          fi
-
-
-          # ==================================================
-          # FRONTEND S3
-          # ==================================================
-
           FRONTEND_BUCKET=$(terraform output -raw s3_frontend_bucket 2>/dev/null || true)
-
-          if [ -z "$FRONTEND_BUCKET" ]; then
-            FRONTEND_BUCKET="Not available"
-          fi
-
-
-          # ==================================================
-          # FRONTEND URL
-          # ==================================================
-
           FRONTEND_URL=$(terraform output -raw frontend_url 2>/dev/null || true)
-
-          if [ -z "$FRONTEND_URL" ]; then
-            FRONTEND_URL="Not available"
-          fi
-
-
-          # ==================================================
-          # CHAT URL
-          # ==================================================
-
           CHAT_URL=$(terraform output -raw chat_url 2>/dev/null || true)
-
-          if [ -z "$CHAT_URL" ]; then
-            CHAT_URL="Not available"
-          fi
-
-
-          # ==================================================
-          # HEALTH URL
-          # ==================================================
-
           HEALTH_URL=$(terraform output -raw health_url 2>/dev/null || true)
-
-          if [ -z "$HEALTH_URL" ]; then
-            HEALTH_URL="Not available"
-          fi
-
-
-          # ==================================================
-          # LAMBDA
-          # ==================================================
-
           LAMBDA_FUNCTION=$(terraform output -raw lambda_function_name 2>/dev/null || true)
-
-          if [ -z "$LAMBDA_FUNCTION" ]; then
-            LAMBDA_FUNCTION="Not available"
-          fi
-
-
-          # ==================================================
-          # AWS REGION
-          # ==================================================
-
           AWS_REGION_OUTPUT=$(terraform output -raw aws_region 2>/dev/null || true)
-
-          if [ -z "$AWS_REGION_OUTPUT" ]; then
-            AWS_REGION_OUTPUT="$DEFAULT_AWS_REGION"
-          fi
-
-
-          # ==================================================
-          # BEDROCK MODEL
-          # ==================================================
-
           BEDROCK_MODEL=$(terraform output -raw bedrock_model_id 2>/dev/null || true)
 
-          if [ -z "$BEDROCK_MODEL" ]; then
-            BEDROCK_MODEL="Not available"
-          fi
+          [ -z "$API_URL" ] && API_URL="Not available"
+          [ -z "$FRONTEND_BUCKET" ] && FRONTEND_BUCKET="Not available"
+          [ -z "$FRONTEND_URL" ] && FRONTEND_URL="Not available"
+          [ -z "$CHAT_URL" ] && CHAT_URL="Not available"
+          [ -z "$HEALTH_URL" ] && HEALTH_URL="Not available"
+          [ -z "$LAMBDA_FUNCTION" ] && LAMBDA_FUNCTION="Not available"
+          [ -z "$AWS_REGION_OUTPUT" ] && AWS_REGION_OUTPUT="$DEFAULT_AWS_REGION"
+          [ -z "$BEDROCK_MODEL" ] && BEDROCK_MODEL="Not available"
 
-
-          # ==================================================
-          # SAVE GITHUB OUTPUTS
-          # ==================================================
-
-          echo "api_url=$API_URL" >> "$GITHUB_OUTPUT"
-
-          echo "frontend_bucket=$FRONTEND_BUCKET" >> "$GITHUB_OUTPUT"
-
-          echo "frontend_url=$FRONTEND_URL" >> "$GITHUB_OUTPUT"
-
-          echo "chat_url=$CHAT_URL" >> "$GITHUB_OUTPUT"
-
-          echo "health_url=$HEALTH_URL" >> "$GITHUB_OUTPUT"
-
-          echo "lambda_function=$LAMBDA_FUNCTION" >> "$GITHUB_OUTPUT"
-
-          echo "aws_region=$AWS_REGION_OUTPUT" >> "$GITHUB_OUTPUT"
-
-          echo "bedrock_model=$BEDROCK_MODEL" >> "$GITHUB_OUTPUT"
-
-
-          # ==================================================
-          # DISPLAY OUTPUTS
-          # ==================================================
+          {
+            echo "api_url=$API_URL"
+            echo "frontend_bucket=$FRONTEND_BUCKET"
+            echo "frontend_url=$FRONTEND_URL"
+            echo "chat_url=$CHAT_URL"
+            echo "health_url=$HEALTH_URL"
+            echo "lambda_function=$LAMBDA_FUNCTION"
+            echo "aws_region=$AWS_REGION_OUTPUT"
+            echo "bedrock_model=$BEDROCK_MODEL"
+          } >> "$GITHUB_OUTPUT"
 
           echo ""
           echo "========================================"
           echo "       DEPLOYMENT OUTPUTS"
           echo "========================================"
 
-          echo ""
-          echo "API Gateway:"
-          echo "$API_URL"
+          echo "API Gateway      : $API_URL"
+          echo "Frontend URL     : $FRONTEND_URL"
+          echo "Frontend Bucket  : $FRONTEND_BUCKET"
+          echo "Chat URL         : $CHAT_URL"
+          echo "Health URL       : $HEALTH_URL"
+          echo "Lambda           : $LAMBDA_FUNCTION"
+          echo "Bedrock Model    : $BEDROCK_MODEL"
+          echo "AWS Region       : $AWS_REGION_OUTPUT"
 
-          echo ""
-          echo "Frontend URL:"
-          echo "$FRONTEND_URL"
-
-          echo ""
-          echo "Frontend S3 Bucket:"
-          echo "$FRONTEND_BUCKET"
-
-          echo ""
-          echo "Chat URL:"
-          echo "$CHAT_URL"
-
-          echo ""
-          echo "Health URL:"
-          echo "$HEALTH_URL"
-
-          echo ""
-          echo "Lambda Function:"
-          echo "$LAMBDA_FUNCTION"
-
-          echo ""
-          echo "Bedrock Model:"
-          echo "$BEDROCK_MODEL"
-
-          echo ""
-          echo "AWS Region:"
-          echo "$AWS_REGION_OUTPUT"
-
-          echo ""
-          echo "========================================"
-
-
-      # ------------------------------------------------------
-      # 13. TEST API HEALTH
-      # ------------------------------------------------------
+      # ============================================================
+      # 12. HEALTH CHECK
+      # ============================================================
 
       - name: Test API health
         if: steps.deploy_outputs.outputs.health_url != 'Not available'
         run: |
-
           HEALTH_URL="${{ steps.deploy_outputs.outputs.health_url }}"
 
           echo "Testing:"
@@ -545,93 +273,74 @@ jobs:
             "$HEALTH_URL" || true)
 
           echo ""
-          echo "HTTP Status:"
-          echo "$HTTP_STATUS"
+          echo "HTTP Status: $HTTP_STATUS"
 
           echo ""
           echo "Response:"
           cat /tmp/health-response.json || true
 
           if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
-            echo ""
-            echo "✅ Health endpoint passed."
+            echo "Health check passed."
           else
-            echo ""
-            echo "⚠️ Health endpoint returned HTTP $HTTP_STATUS."
-            echo "Deployment itself completed, but health check returned a non-2xx response."
+            echo "WARNING: Health endpoint returned HTTP $HTTP_STATUS."
           fi
 
-
-      # ------------------------------------------------------
-      # 14. DEPLOYMENT SUMMARY
-      # ------------------------------------------------------
+      # ============================================================
+      # 13. FINAL SUMMARY
+      # ============================================================
 
       - name: Deployment Summary
-
         run: |
-
           echo ""
           echo "========================================"
           echo "       DEPLOYMENT COMPLETE"
           echo "========================================"
 
           echo ""
-
           echo "Environment:"
           echo "${{ github.event.inputs.environment || 'dev' }}"
 
           echo ""
-
           echo "Repository:"
           echo "${{ github.repository }}"
 
           echo ""
-
           echo "AWS Account:"
           echo "${{ secrets.AWS_ACCOUNT_ID }}"
 
           echo ""
-
           echo "AWS Region:"
           echo "${{ steps.deploy_outputs.outputs.aws_region }}"
 
           echo ""
-
           echo "Frontend URL:"
           echo "${{ steps.deploy_outputs.outputs.frontend_url }}"
 
           echo ""
-
-          echo "Frontend S3 Bucket:"
+          echo "Frontend S3:"
           echo "${{ steps.deploy_outputs.outputs.frontend_bucket }}"
 
           echo ""
-
           echo "API Gateway:"
           echo "${{ steps.deploy_outputs.outputs.api_url }}"
 
           echo ""
-
           echo "Chat URL:"
           echo "${{ steps.deploy_outputs.outputs.chat_url }}"
 
           echo ""
-
           echo "Health URL:"
           echo "${{ steps.deploy_outputs.outputs.health_url }}"
 
           echo ""
-
-          echo "Lambda Function:"
+          echo "Lambda:"
           echo "${{ steps.deploy_outputs.outputs.lambda_function }}"
 
           echo ""
-
           echo "Bedrock Model:"
           echo "${{ steps.deploy_outputs.outputs.bedrock_model }}"
 
           echo ""
-
           echo "========================================"
           echo "           SUCCESS"
           echo "========================================"
